@@ -100,6 +100,7 @@ class ExecHandler(SPDYHandler):
         rc = -1
         idle_time = time.monotonic()
         while True:
+            process_active = False
             r, w, x = select.select(
                 [self.proc.stdout, self.proc.stderr, self.sock], [], [], 1)
             # print("Select yield", r)
@@ -118,13 +119,17 @@ class ExecHandler(SPDYHandler):
                         self.proc.stdin.write(data)
                         self.proc.stdin.flush()
                 else:
+
                     idle_time = time.monotonic()
                     if reader == self.proc.stdout:
                         output = "stdout"
                     else:
                         output = "stderr"
-                    self.sendFrame(self.streams[output], reader.read())
-            if self.proc.poll() is not None:
+                    data = reader.read()
+                    if data:
+                        process_active = True
+                        self.sendFrame(self.streams[output], data)
+            if not process_active and self.proc.poll() is not None:
                 rc = self.proc.poll()
                 break
 
