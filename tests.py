@@ -17,7 +17,9 @@ import socket
 import unittest
 import tempfile
 import os
+import shutil
 import subprocess
+import uuid
 
 import cherrypy
 # from kubernetes.config import config_exception as kce
@@ -33,17 +35,41 @@ def find_free_port():
         return s.getsockname()[1]
 
 
+def generate_cert():
+    d = str(tempfile.mkdtemp())
+    if subprocess.Popen(
+            ["openssl", "genrsa", "-out", d + "/privkey.pem", "2048"]).wait():
+        raise RuntimeError("Couldn't create privkey")
+    if subprocess.Popen(
+            ["openssl", "req", "-new", "-x509", "-days", "365",
+             "-subj", "/C=FR/O=K1S/CN=localhost",
+             "-key", d + "/privkey.pem",
+             "-out", d + "/cert.pem"]).wait():
+        raise RuntimeError("Couldn't create cert")
+    return d
+
+
 class K1sTestCase(unittest.TestCase):
     def setUp(self):
         self.port = find_free_port()
-        self.api = k1s.api.main(self.port, blocking=False)
+        self.cert_dir = generate_cert()
+        self.token = str(uuid.uuid4())
+        self.api = k1s.api.main(
+            self.port, blocking=False, token=self.token, tls=dict(
+                cpath=self.cert_dir + "/cert.pem",
+                kpath=self.cert_dir + "/privkey.pem"
+            ))
         self.url = "http://localhost:%d" % self.port
         self.kubeconfig = tempfile.mkstemp()[1]
+        self.writeKubeConfig(self.token)
+
+    def writeKubeConfig(self, token):
         with open(self.kubeconfig, "w") as of:
             of.write("""apiVersion: v1
 clusters:
 - cluster:
-    server: http://localhost:%d
+    server: https://localhost:%d
+    insecure-skip-tls-verify: true
   name: k1s
 contexts:
 - context:
@@ -56,13 +82,14 @@ preferences: {}
 users:
 - name: admin/k1s
   user:
-    token: y2-4r06yYz4uJIdNidaWZyuoO7HGEwf7rRRrTCpRTLA
-""" % self.port)
+    token: %s
+""" % (self.port, token))
 
     def tearDown(self):
         cherrypy.engine.exit()
         cherrypy.server.httpserver = None
         os.unlink(self.kubeconfig)
+        shutil.rmtree(self.cert_dir)
 
     def test_python_client(self):
         conf = config.new_client_from_config(
@@ -74,6 +101,19 @@ users:
         assert 1 == len(pods)
         assert "Pod" == pods[0].kind
         assert "todo" == pods[0].metadata.name
+
+    def test_bad_token(self):
+        self.writeKubeConfig("bad-token")
+        conf = config.new_client_from_config(
+            config_file=self.kubeconfig, context='/k1s/admin')
+        # tok = conf.configuration.api_key.get('authorization', '').split()[-1]
+        client = k8s_client.CoreV1Api(conf)
+
+        try:
+            pods = client.list_namespaced_pod("nodepool")
+            assert False
+        except k8s_client.rest.ApiException:
+            pass
 
     def test_kubectl(self):
         proc = subprocess.Popen(["kubectl", "exec", "todo", "id"],

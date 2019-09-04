@@ -143,9 +143,17 @@ class ExecHandler(SPDYHandler):
 
 
 class K1s:
+    def __init__(self, token):
+        self.bearer = 'Bearer %s' % token if token else None
+
+    def checkToken(self, headers) -> None:
+        if self.bearer and headers.get('Authorization', '') != self.bearer:
+            raise cherrypy.HTTPError(401, 'Unauthorized')
+
     @cherrypy.expose
     @cherrypy.tools.spdy(handler_cls=ExecHandler)
     def execStream(self, ns, pod, *args, **kwargs):
+        self.checkToken(cherrypy.request.headers)
         kwargs['pod'] = pod
         cherrypy.request.spdy_handler.handle(kwargs)
         resp = cherrypy.response
@@ -154,11 +162,13 @@ class K1s:
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def get(self, ns: str, pod: str) -> Dict:
+        self.checkToken(cherrypy.request.headers)
         return getPod(pod)
 
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def list(self, ns: str, **kwargs) -> Dict:
+        self.checkToken(cherrypy.request.headers)
         return {
             "kind": "PodList",
             "apiVersion": "v1",
@@ -168,6 +178,7 @@ class K1s:
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def api(self, **kwargs) -> Dict:
+        self.checkToken(cherrypy.request.headers)
         return {
             "kind": "APIResourceList",
             "groupVersion": "v1",
@@ -240,6 +251,7 @@ class K1s:
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def index(self, **kwargs) -> Dict:
+        self.checkToken(cherrypy.request.headers)
         return {
             "kind": "APIVersions",
             "versions": ["v1"]
@@ -248,15 +260,23 @@ class K1s:
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def indexes(self, **kwargs) -> Dict:
+        self.checkToken(cherrypy.request.headers)
         return {
             "kind": "APIGroupList",
             "apiVersion": "v1",
             "groups": []}
 
 
-def main(port=9023, blocking=True):
+def main(port=9023, blocking=True, token=None, tls={}):
     route_map = cherrypy.dispatch.RoutesDispatcher()
-    api = K1s()
+    api = K1s(token)
+    if tls.get("cpath"):
+        cherrypy.server.ssl_module = 'builtin'
+        cherrypy.server.ssl_certificate = tls["cpath"]
+        cherrypy.server.ssl_private_key = tls["kpath"]
+        if tls.get("chain_path"):
+            cherrypy.server.ssl_certificate_chain = tls["chain_path"]
+
     route_map.connect('api', '/api/v1/namespaces/{ns}/pods/{pod}/exec',
                       controller=api, action='execStream',
                       conditions=dict(method=["POST"]))
@@ -288,4 +308,9 @@ def main(port=9023, blocking=True):
 
 
 if __name__ == '__main__':
-    main()
+    main(token=os.environ.get("K1S_TOKEN"),
+         tls=dict(
+             cpath=os.environ.get("K1S_CERT_PATH"),
+             kpath=os.environ.get("K1S_KEY_PATH"),
+             chain_path=os.environ.get("K1S_CHAIN_PATH")
+         ))

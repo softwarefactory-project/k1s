@@ -7,7 +7,6 @@ the go-client exec api machinery.
 
 ## TODO
 
-* Verify bearer token
 * Add real container creation, state and destroy
 * Fixes todos inlined in source
 
