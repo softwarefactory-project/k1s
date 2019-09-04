@@ -167,23 +167,91 @@ class K1s:
 
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
-    def index(self) -> Dict:
+    def api(self, **kwargs) -> Dict:
+        return {
+            "kind": "APIResourceList",
+            "groupVersion": "v1",
+            "resources": [{
+                "name": "namespaces",
+                "singularName": "",
+                "namespaced": False,
+                "kind": "Namespace",
+                "verbs": [
+                    "create",
+                    "delete",
+                    "get",
+                    "list",
+                    "patch",
+                    "update",
+                    "watch"
+                ],
+                "shortNames": [
+                    "ns"
+                ]
+            }, {
+                "name": "pods",
+                "singularName": "",
+                "namespaced": True,
+                "kind": "Pod",
+                "verbs": [
+                    "create",
+                    "delete",
+                    "deletecollection",
+                    "get",
+                    "list",
+                    "patch",
+                    "update",
+                    "watch"
+                ],
+                "shortNames": [
+                    "po"
+                ],
+                "categories": [
+                    "all"
+                ]
+            }, {
+                "name": "pods/exec",
+                "singularName": "",
+                "namespaced": True,
+                "kind": "Pod",
+                "verbs": []
+            }, {
+                "name": "pods/log",
+                "singularName": "",
+                "namespaced": True,
+                "kind": "Pod",
+                "verbs": [
+                    "get"
+                ]
+            }, {
+                "name": "pods/status",
+                "singularName": "",
+                "namespaced": True,
+                "kind": "Pod",
+                "verbs": [
+                    "get",
+                    "patch",
+                    "update"
+                ]
+            },
+            ]
+        }
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
+    def index(self, **kwargs) -> Dict:
+        return {
+            "kind": "APIVersions",
+            "versions": ["v1"]
+        }
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
+    def indexes(self, **kwargs) -> Dict:
         return {
             "kind": "APIGroupList",
             "apiVersion": "v1",
-            "groups": [{
-                "name": "apiregistration.k8s.io",
-                "versions": [{
-                    "groupVersion": "apiregistration.k8s.io/v1",
-                    "version": "v1"
-                }, {
-                    "groupVersion": "apiregistration.k8s.io/v1beta1",
-                    "version": "v1beta1"
-                }],
-                "preferredVersion": {
-                    "groupVersion": "apiregistration.k8s.io/v1",
-                    "version": "v1"}}]
-        }
+            "groups": []}
 
 
 def main(port=9023, blocking=True):
@@ -196,6 +264,10 @@ def main(port=9023, blocking=True):
                       controller=api, action='get')
     route_map.connect('api', '/api/v1/namespaces/{ns}/pods',
                       controller=api, action='list')
+    route_map.connect('api', '/api/v1',
+                      controller=api, action='api')
+    route_map.connect('api', '/apis',
+                      controller=api, action='indexes')
     route_map.connect('api', '/api',
                       controller=api, action='index')
 
