@@ -19,6 +19,7 @@ import tempfile
 import os
 import shutil
 import subprocess
+import time
 import uuid
 
 import cherrypy
@@ -62,6 +63,12 @@ class K1sTestCase(unittest.TestCase):
         self.url = "http://localhost:%d" % self.port
         self.kubeconfig = tempfile.mkstemp()[1]
         self.writeKubeConfig(self.token)
+        self.pod = "k1s-nodepool-%d" % self.port
+        self.proc = subprocess.Popen([
+            "sudo", "podman", "run", "-it", "--name", self.pod,
+            "--rm", "fedora", "sleep", "Inf"])
+        # Give pod a second to start...
+        time.sleep(1)
 
     def writeKubeConfig(self, token):
         with open(self.kubeconfig, "w") as of:
@@ -90,23 +97,22 @@ users:
         cherrypy.server.httpserver = None
         os.unlink(self.kubeconfig)
         shutil.rmtree(self.cert_dir)
+        subprocess.Popen(["sudo", "podman", "kill", self.pod]).wait()
 
     def test_python_client(self):
         conf = config.new_client_from_config(
             config_file=self.kubeconfig, context='/k1s/admin')
-        # tok = conf.configuration.api_key.get('authorization', '').split()[-1]
         client = k8s_client.CoreV1Api(conf)
 
         pods = client.list_namespaced_pod("nodepool").items
-        assert 1 == len(pods)
+        assert len(pods) >= 1
         assert "Pod" == pods[0].kind
-        assert "todo" == pods[0].metadata.name
+        assert self.pod == pods[0].metadata.name
 
     def test_bad_token(self):
         self.writeKubeConfig("bad-token")
         conf = config.new_client_from_config(
             config_file=self.kubeconfig, context='/k1s/admin')
-        # tok = conf.configuration.api_key.get('authorization', '').split()[-1]
         client = k8s_client.CoreV1Api(conf)
 
         try:
@@ -116,7 +122,7 @@ users:
             pass
 
     def test_kubectl(self):
-        proc = subprocess.Popen(["kubectl", "exec", "todo", "id"],
+        proc = subprocess.Popen(["kubectl", "exec", self.pod, "id"],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 env=dict(KUBECONFIG=self.kubeconfig))
@@ -137,7 +143,9 @@ users:
     - command: echo success
 """)
         with open(hosts, "w") as of:
-            of.write("""[all]\ntodo ansible_connection=kubectl\n""")
+            of.write("[all]\n%s ansible_connection=kubectl "
+                     "ansible_python_interpreter=/bin/python3\n" % self.pod)
+
 
         proc = subprocess.Popen(["ansible-playbook", "-i", hosts, playbook],
                                 stdout=subprocess.PIPE,

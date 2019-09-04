@@ -25,14 +25,25 @@ import cherrypy
 from k1s.spdy import SPDYTool, SPDYHandler
 
 cherrypy.tools.spdy = SPDYTool()
+Podman = ["sudo", "podman"]
+
+
+def pread(args: List[str]) -> str:
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE)
+    stdout, _ = proc.communicate()
+    return stdout.decode('utf-8')
 
 
 def getPod(podId: str) -> Dict:
-    # TODO: read pod state informations
-    ns = "tbd"
-    ts = "2019-06-13T07:04:48Z"
-    image = "nodepool-label"
-    status = "Running"
+    inf = json.loads(pread(Podman + ["container", "inspect", podId]))
+    if len(inf) > 1:
+        raise RuntimeError("Multiple container with same name: %s!" % podId)
+    inf = inf[0]
+    ns = inf["Config"]["Annotations"].get(
+        "io.softwarefactory-project.k1s.Namespace", "default")
+    ts = inf["Created"]
+    image = inf["ImageName"]
+    status = inf["State"]["Status"].capitalize()
 
     return {
         "kind": "Pod",
@@ -41,6 +52,7 @@ def getPod(podId: str) -> Dict:
             "name": podId,
             "namespace": ns,
             "creationTimestamp": ts,
+            "selfLink": "/api/v1/namespaces/%s/pods/%s" % (ns, podId),
         },
         "spec": {
             "volumes": [],
@@ -70,14 +82,17 @@ def getPod(podId: str) -> Dict:
 
 
 def listPods() -> List[str]:
-    # TODO: return list of running pods id
-    return ["todo"]
+    return list(filter(
+        lambda x: x.startswith("k1s-"),
+        pread(Podman + ["ps", "-a", "--format", "{{.Names}}"]).split('\n')))
 
 
 class ExecHandler(SPDYHandler):
     def run(self):
+        inf = getPod(self.args['pod'])
+        if inf["metadata"]["namespace"] != self.args['ns']:
+            raise RuntimeError("Invalid namespace %s" % self.args['ns'])
         # print("Exec args are:", self.args)
-        # TODO: verify pod is ready
         print(self.addr, "%s: %s" % (self.args['pod'], self.args['command']))
         # Process stream creation request first
         self.streams = {}
@@ -86,9 +101,18 @@ class ExecHandler(SPDYHandler):
             self.streams[name] = streamId
         # print("Got all the streams!", self.streams)
 
-        # TODO: prefix command with podman|runc exec
+        execCommand = ["exec"]
+        if self.args.get('stdin'):
+            execCommand.append("-i")
+        execCommand.append(self.args['pod'])
+        if isinstance(self.args['command'], list):
+            execCommand.extend(self.args['command'])
+        else:
+            execCommand.append(self.args['command'])
+
         self.proc = subprocess.Popen(
-            self.args['command'], bufsize=0, start_new_session=True,
+            Podman + execCommand,
+            bufsize=0, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.PIPE if self.args.get('stdin') else None)
         for f in (self.proc.stdout, self.proc.stderr, self.sock):
@@ -155,6 +179,7 @@ class K1s:
     def execStream(self, ns, pod, *args, **kwargs):
         self.checkToken(cherrypy.request.headers)
         kwargs['pod'] = pod
+        kwargs['ns'] = ns
         cherrypy.request.spdy_handler.handle(kwargs)
         resp = cherrypy.response
         resp.headers['X-Stream-Protocol-Version'] = "v4.channel.k8s.io"
