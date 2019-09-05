@@ -39,6 +39,7 @@ def getPod(podId: str) -> Dict:
     if len(inf) > 1:
         raise RuntimeError("Multiple container with same name: %s!" % podId)
     inf = inf[0]
+    name = podId.replace("k1s-", "")
     ns = inf["Config"]["Annotations"].get(
         "io.softwarefactory-project.k1s.Namespace", "default")
     ts = inf["Created"]
@@ -49,15 +50,15 @@ def getPod(podId: str) -> Dict:
         "kind": "Pod",
         "apiVersion": "v1",
         "metadata": {
-            "name": podId,
+            "name": name,
             "namespace": ns,
             "creationTimestamp": ts,
-            "selfLink": "/api/v1/namespaces/%s/pods/%s" % (ns, podId),
+            "selfLink": "/api/v1/namespaces/%s/pods/%s" % (ns, name),
         },
         "spec": {
             "volumes": [],
             "containers": [{
-                "name": podId,
+                "name": name,
                 "image": image,
                 "args": ["paused"],
             }],
@@ -66,7 +67,7 @@ def getPod(podId: str) -> Dict:
             "phase": status,
             "startTime": ts,
             "containerStatuses": [{
-                "name": podId,
+                "name": name,
                 "state": {
                     status.lower(): {
                         "startedAt": ts,
@@ -178,7 +179,7 @@ class K1s:
     @cherrypy.tools.spdy(handler_cls=ExecHandler)
     def execStream(self, ns, pod, *args, **kwargs):
         self.checkToken(cherrypy.request.headers)
-        kwargs['pod'] = pod
+        kwargs['pod'] = "k1s-" + pod
         kwargs['ns'] = ns
         cherrypy.request.spdy_handler.handle(kwargs)
         resp = cherrypy.response
@@ -188,7 +189,35 @@ class K1s:
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def get(self, ns: str, pod: str) -> Dict:
         self.checkToken(cherrypy.request.headers)
-        return getPod(pod)
+        return getPod("k1s-" + pod)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
+    def delete(self, ns: str, pod: str, **kwargs) -> None:
+        print("Deleting", pod)
+        subprocess.Popen(Podman + ["kill", "k1s-" + pod])
+
+    @cherrypy.expose
+    @cherrypy.tools.json_in()
+    @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
+    def create(self, ns: str, **kwargs) -> Dict:
+        self.checkToken(cherrypy.request.headers)
+        req = cherrypy.request.json
+        name = "k1s-" + req["metadata"]["name"]
+        image = req["spec"]["containers"][0]["image"]
+        proc = subprocess.Popen(
+            Podman + ["run", "--rm", "--name", name, image, "sleep", "Inf"])
+        print("Process started", proc)
+        return {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": req["metadata"]["name"],
+                "namespace": ns,
+            },
+            "spec": req["spec"],
+            "status": {"phase": "Pending"},
+        }
 
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
@@ -306,7 +335,13 @@ def main(port=9023, blocking=True, token=None, tls={}):
                       controller=api, action='execStream',
                       conditions=dict(method=["POST"]))
     route_map.connect('api', '/api/v1/namespaces/{ns}/pods/{pod}',
+                      controller=api, action='delete',
+                      conditions=dict(method=["DELETE"]))
+    route_map.connect('api', '/api/v1/namespaces/{ns}/pods/{pod}',
                       controller=api, action='get')
+    route_map.connect('api', '/api/v1/namespaces/{ns}/pods',
+                      controller=api, action='create',
+                      conditions=dict(method=["POST"]))
     route_map.connect('api', '/api/v1/namespaces/{ns}/pods',
                       controller=api, action='list')
     route_map.connect('api', '/api/v1',

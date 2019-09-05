@@ -30,6 +30,9 @@ from openshift import config
 import k1s.api
 
 
+fedora = "registry.fedoraproject.org/fedora:30"
+
+
 def find_free_port():
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(('', 0))
@@ -63,10 +66,13 @@ class K1sTestCase(unittest.TestCase):
         self.url = "http://localhost:%d" % self.port
         self.kubeconfig = tempfile.mkstemp()[1]
         self.writeKubeConfig(self.token)
-        self.pod = "k1s-nodepool-%d" % self.port
+        self.proc = None
+
+    def createPod(self):
+        self.pod = "nodepool-%d" % self.port
         self.proc = subprocess.Popen([
-            "sudo", "podman", "run", "-it", "--name", self.pod,
-            "--rm", "fedora", "sleep", "Inf"])
+            "sudo", "podman", "run", "-it", "--name", "k1s-" + self.pod,
+            "--rm", fedora, "sleep", "Inf"])
         # Give pod a second to start...
         time.sleep(1)
 
@@ -97,17 +103,64 @@ users:
         cherrypy.server.httpserver = None
         os.unlink(self.kubeconfig)
         shutil.rmtree(self.cert_dir)
-        subprocess.Popen(["sudo", "podman", "kill", self.pod]).wait()
+        if self.proc:
+            subprocess.Popen(
+                ["sudo", "podman", "kill", "k1s-" + self.pod]).wait()
 
     def test_python_client(self):
         conf = config.new_client_from_config(
             config_file=self.kubeconfig, context='/k1s/admin')
         client = k8s_client.CoreV1Api(conf)
+        self.createPod()
 
         pods = client.list_namespaced_pod("nodepool").items
         assert len(pods) >= 1
         assert "Pod" == pods[0].kind
         assert self.pod == pods[0].metadata.name
+
+    def test_create(self):
+        conf = config.new_client_from_config(
+            config_file=self.kubeconfig, context='/k1s/admin')
+        client = k8s_client.CoreV1Api(conf)
+
+        pod_name = "created-%d" % self.port
+        spec_body = {
+            'name': pod_name,
+            'image': fedora,
+            'command': ["/bin/bash", "-c", "--"],
+            'args': ["while true; do sleep 30; done;"],
+            'workingDir': '/tmp',
+        }
+        pod_body = {
+            'apiVersion': 'v1',
+            'kind': 'Pod',
+            'metadata': {'name': pod_name},
+            'spec': {
+                'containers': [spec_body],
+            },
+            'restartPolicy': 'Never',
+        }
+        client.create_namespaced_pod("default", pod_body)
+        time.sleep(1)
+
+        pods = client.list_namespaced_pod("default").items
+        assert len(pods) >= 1
+        assert "Pod" == pods[0].kind
+        assert pod_name == pods[0].metadata.name
+
+        delete_body = {
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "propagationPolicy": "Background"
+        }
+        client.delete_namespaced_pod(
+            pod_name, "default", delete_body)
+
+        time.sleep(1)
+        pods = client.list_namespaced_pod("default").items
+        if any(filter(lambda x: x.metadata.name == pod_name, pods)):
+            print(pods)
+            assert False, "pod still there..."
 
     def test_bad_token(self):
         self.writeKubeConfig("bad-token")
@@ -116,12 +169,13 @@ users:
         client = k8s_client.CoreV1Api(conf)
 
         try:
-            pods = client.list_namespaced_pod("nodepool")
+            client.list_namespaced_pod("nodepool")
             assert False
         except k8s_client.rest.ApiException:
             pass
 
     def test_kubectl(self):
+        self.createPod()
         proc = subprocess.Popen(["kubectl", "exec", self.pod, "id"],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
@@ -142,20 +196,19 @@ users:
     - command: sleep 5
     - command: echo success
 """)
+        self.createPod()
         with open(hosts, "w") as of:
             of.write("[all]\n%s ansible_connection=kubectl "
                      "ansible_python_interpreter=/bin/python3\n" % self.pod)
-
 
         proc = subprocess.Popen(["ansible-playbook", "-i", hosts, playbook],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 env=dict(KUBECONFIG=self.kubeconfig,
                                          PATH=os.environ["PATH"]))
-        stdout, stderr = proc.communicate()
+        stdout, _ = proc.communicate()
         os.unlink(playbook)
         os.unlink(hosts)
-        assert b"" == stderr
         assert b"failed=0" in stdout
         assert b"unreachable=0" in stdout
         assert b"changed=3" in stdout
