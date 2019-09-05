@@ -196,11 +196,15 @@ class K1s:
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def get(self, ns: str, pod: str) -> Dict:
         self.checkToken(cherrypy.request.headers)
-        return getPod("k1s-" + pod)
+        try:
+            return getPod("k1s-" + pod)
+        except json.decoder.JSONDecodeError:
+            raise cherrypy.HTTPError(404, "Pod not found")
 
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def delete(self, ns: str, pod: str, **kwargs) -> None:
+        self.checkToken(cherrypy.request.headers)
         log.info("Deleting %s")
         subprocess.Popen(Podman + ["kill", "k1s-" + pod])
 
@@ -213,8 +217,10 @@ class K1s:
         name = "k1s-" + req["metadata"]["name"]
         image = req["spec"]["containers"][0]["image"]
         log.info("Creating pod %s with %s", name, image)
-        subprocess.Popen(
-            Podman + ["run", "--rm", "--name", name, image, "sleep", "Inf"])
+        create_args = [
+            "run", "--rm", "--detach", "--name", name, image, "sleep", "Inf"]
+        if subprocess.Popen(Podman + create_args).wait():
+            log.warning("Couldn't create pod")
         return {
             "apiVersion": "v1",
             "kind": "Pod",
@@ -230,10 +236,16 @@ class K1s:
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def list(self, ns: str, **kwargs) -> Dict:
         self.checkToken(cherrypy.request.headers)
+        pod_list = []
+        for pod in listPods():
+            try:
+                pod_list.append(getPod(pod))
+            except json.decoder.JSONDecodeError:
+                pass
         return {
             "kind": "PodList",
             "apiVersion": "v1",
-            "items": [getPod(pod) for pod in listPods()]
+            "items": pod_list,
         }
 
     @cherrypy.expose
