@@ -5,11 +5,6 @@ This only support pods listing, minimal creation, exec and destruction.
 The api feature a custom (very limited) SPDY cherrypy tool to handle
 the go-client exec api machinery.
 
-## TODO
-
-* Add real container creation, state and destroy
-* Fixes todos inlined in source
-
 ## Setup
 
 ```
@@ -20,7 +15,7 @@ PYTHONPATH=$(pwd) python3 k1s/api.py
 ## Usage
 
 ```
-cat<<EOF>kubeconfig
+$ cat<<EOF>kubeconfig
 apiVersion: v1
 clusters:
 - cluster:
@@ -37,15 +32,26 @@ preferences: {}
 users:
 - name: admin/k1s
   user:
-    token: y2-4r06yYz4uJIdNidaWZyuoO7HGEwf7rRRrTCpRTLA
+    token: secret
 EOF
 export KUBECONFIG=$(pwd)/kubeconfig
 
+$ oc apply -f - << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fedora-000042
+spec:
+  containers:
+  - image: registry.fedoraproject.org/fedora:30
+EOF
+
 $ oc get pods
-NAME      READY     STATUS    RESTARTS   AGE
-todo      1/1       Running   0          22h
-$ oc exec todo id
-uid=1000(centos) gid=1000(centos)
+NAME               READY     STATUS    RESTARTS   AGE
+fedora-000042      1/1       Running   0          3s
+
+$ oc exec fedora-000042 id
+uid=0(root) gid=0(root) groups=0(root)
 ```
 
 ## Ansible usage
@@ -53,7 +59,7 @@ uid=1000(centos) gid=1000(centos)
 ```
 cat<<EOF>inventory
 [all]
-todo ansible_connection=kubectl
+fedora-000042 ansible_connection=kubectl
 EOF
 
 cat<<EOF>pod.yaml
@@ -64,14 +70,14 @@ EOF
 
 $ ansible-playbook -i inventory pod.yaml
 
-PLAY [all] ************************************************************************************************************
+PLAY [all] **************************************************
 
-TASK [Gathering Facts] ************************************************************************************************
-ok: [todo]
+TASK [Gathering Facts] **************************************
+ok: [fedora-000042]
 
-TASK [command] ********************************************************************************************************
-changed: [todo]
+TASK [command] **********************************************
+changed: [fedora-000042]
 
-PLAY RECAP ************************************************************************************************************
-todo                       : ok=2    changed=1    unreachable=0    failed=0
+PLAY RECAP **************************************************
+fedora-000042: ok=2    changed=1    unreachable=0    failed=0
 ```
