@@ -26,7 +26,7 @@ setuptools.setup(
     packages=["k1s"],
     entry_points={
         'console_scripts': [
-            'k1s=k1s.api:main',
+            'k1s=k1s.api:run',
         ],
     },
     install_requires=["cherrypy", "routes"],

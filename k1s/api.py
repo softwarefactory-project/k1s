@@ -145,7 +145,6 @@ class ExecHandler(SPDYHandler):
                         # This is the end
                         self.proc.stdin.close()
                     else:
-                        print("Writting proc stdin", data)
                         self.proc.stdin.write(data)
                         self.proc.stdin.flush()
                 else:
@@ -169,7 +168,7 @@ class ExecHandler(SPDYHandler):
             'code': rc}).encode('ascii'))
         self.sock.close()
         self.proc.terminate()
-        print(self.addr, "over and out")
+        # print(self.addr, "over and out")
 
 
 class K1s:
@@ -242,6 +241,10 @@ class K1s:
 
 
 def main(port=9023, blocking=True, token=None, tls=None):
+    if os.environ.get("K1S_DEBUG"):
+        logging.basicConfig(
+            format='%(levelname)-5.5s - %(message)s',
+            level=logging.DEBUG)
     route_map = cherrypy.dispatch.RoutesDispatcher()
     api = K1s(token)
     if tls:
@@ -273,14 +276,14 @@ def main(port=9023, blocking=True, token=None, tls=None):
                       controller=api, action='index')
 
     conf = {'/': {'request.dispatch': route_map}}
-    cherrypy.config.update({
-        'global': {
-            # 'environment': 'production',
-            'engine.autoreload.on': True,
-            'server.socket_host': '127.0.0.1',
-            'server.socket_port': int(port),
-        },
-    })
+    gl_conf = {
+        'engine.autoreload.on': True,
+        'server.socket_host': os.environ.get("K1S_HOST", '0.0.0.0'),
+        'server.socket_port': int(port),
+    }
+    if os.environ.get("K1S_ENV", "production") == "production":
+        gl_conf["environment"] = "production"
+    cherrypy.config.update({"global": gl_conf})
     cherrypy.tree.mount(api, '/', config=conf)
     cherrypy.engine.start()
     if blocking:
@@ -288,6 +291,11 @@ def main(port=9023, blocking=True, token=None, tls=None):
     return api
 
 
-if __name__ == '__main__':
-    main(token=os.environ.get("K1S_TOKEN"),
+def run():
+    main(port=os.environ.get("K1S_PORT", 9023),
+         token=os.environ.get("K1S_TOKEN"),
          tls=os.environ.get("K1S_TLS_PATH"))
+
+
+if __name__ == '__main__':
+    main()
