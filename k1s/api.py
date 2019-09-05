@@ -241,15 +241,16 @@ class K1s:
         return dict(kind="APIGroupList", apiVersion="v1", groups=[])
 
 
-def main(port=9023, blocking=True, token=None, tls={}):
+def main(port=9023, blocking=True, token=None, tls=None):
     route_map = cherrypy.dispatch.RoutesDispatcher()
     api = K1s(token)
-    if tls.get("cpath"):
+    if tls:
         cherrypy.server.ssl_module = 'builtin'
-        cherrypy.server.ssl_certificate = tls["cpath"]
-        cherrypy.server.ssl_private_key = tls["kpath"]
-        if tls.get("chain_path"):
-            cherrypy.server.ssl_certificate_chain = tls["chain_path"]
+        cherrypy.server.ssl_certificate = os.path.join(tls, "cert.pem")
+        cherrypy.server.ssl_private_key = os.path.join(tls, "key.pem")
+        chain_path = os.path.join(tls, "chain.pem")
+        if os.path.exists(chain_path):
+            cherrypy.server.ssl_certificate_chain = chain_path
 
     route_map.connect('api', '/api/v1/namespaces/{ns}/pods/{name}/exec',
                       controller=api, action='exec_stream',
@@ -289,8 +290,4 @@ def main(port=9023, blocking=True, token=None, tls={}):
 
 if __name__ == '__main__':
     main(token=os.environ.get("K1S_TOKEN"),
-         tls=dict(
-             cpath=os.environ.get("K1S_CERT_PATH"),
-             kpath=os.environ.get("K1S_KEY_PATH"),
-             chain_path=os.environ.get("K1S_CHAIN_PATH")
-         ))
+         tls=os.environ.get("K1S_TLS_PATH"))

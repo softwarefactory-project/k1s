@@ -42,12 +42,12 @@ def find_free_port():
 def generate_cert():
     d = str(tempfile.mkdtemp())
     if subprocess.Popen(
-            ["openssl", "genrsa", "-out", d + "/privkey.pem", "2048"]).wait():
+            ["openssl", "genrsa", "-out", d + "/key.pem", "2048"]).wait():
         raise RuntimeError("Couldn't create privkey")
     if subprocess.Popen(
             ["openssl", "req", "-new", "-x509", "-days", "365",
              "-subj", "/C=FR/O=K1S/CN=localhost",
-             "-key", d + "/privkey.pem",
+             "-key", d + "/key.pem",
              "-out", d + "/cert.pem"]).wait():
         raise RuntimeError("Couldn't create cert")
     return d
@@ -59,10 +59,7 @@ class K1sTestCase(unittest.TestCase):
         self.cert_dir = generate_cert()
         self.token = str(uuid.uuid4())
         self.api = k1s.api.main(
-            self.port, blocking=False, token=self.token, tls=dict(
-                cpath=self.cert_dir + "/cert.pem",
-                kpath=self.cert_dir + "/privkey.pem"
-            ))
+            self.port, blocking=False, token=self.token, tls=self.cert_dir)
         self.url = "http://localhost:%d" % self.port
         self.kubeconfig = tempfile.mkstemp()[1]
         self.writeKubeConfig(self.token)
