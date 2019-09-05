@@ -14,6 +14,7 @@
 
 import fcntl
 import json
+import logging
 import os
 import select
 import subprocess
@@ -24,6 +25,7 @@ import cherrypy
 
 from k1s.spdy import SPDYTool, SPDYHandler
 
+log = logging.getLogger("K1S.api")
 cherrypy.tools.spdy = SPDYTool()
 Podman = ["sudo", "podman"]
 
@@ -94,7 +96,8 @@ class ExecHandler(SPDYHandler):
         if inf["metadata"]["namespace"] != self.args['ns']:
             raise RuntimeError("Invalid namespace %s" % self.args['ns'])
         # print("Exec args are:", self.args)
-        print(self.addr, "%s: %s" % (self.args['pod'], self.args['command']))
+        log.debug("%s: runnning %s %s",
+                  self.addr, self.args['pod'], self.args['command'])
         # Process stream creation request first
         self.streams = {}
         while len(self.streams) != (4 if self.args.get('stdin') else 3):
@@ -130,7 +133,7 @@ class ExecHandler(SPDYHandler):
                 [self.proc.stdout, self.proc.stderr, self.sock], [], [], 1)
             # print("Select yield", r)
             if time.monotonic() - idle_time > 3600:
-                print("ERROR: process stalled")
+                log.error("ERROR: process stalled")
                 break
             for reader in r:
                 if reader == self.sock:
@@ -194,7 +197,7 @@ class K1s:
     @cherrypy.expose
     @cherrypy.tools.json_out(content_type='application/json; charset=utf-8')
     def delete(self, ns: str, pod: str, **kwargs) -> None:
-        print("Deleting", pod)
+        log.info("Deleting %s")
         subprocess.Popen(Podman + ["kill", "k1s-" + pod])
 
     @cherrypy.expose
@@ -205,9 +208,9 @@ class K1s:
         req = cherrypy.request.json
         name = "k1s-" + req["metadata"]["name"]
         image = req["spec"]["containers"][0]["image"]
-        proc = subprocess.Popen(
+        log.info("Creating pod %s with %s", name, image)
+        subprocess.Popen(
             Podman + ["run", "--rm", "--name", name, image, "sleep", "Inf"])
-        print("Process started", proc)
         return {
             "apiVersion": "v1",
             "kind": "Pod",

@@ -16,6 +16,7 @@
 
 import cherrypy
 import inspect
+import logging
 import struct
 import threading
 import zlib
@@ -23,6 +24,9 @@ from typing import Dict, Tuple
 
 from cherrypy import Tool
 from cheroot.server import HTTPConnection, HTTPRequest, KnownLengthRFile
+
+
+log = logging.getLogger("K1S.spdy")
 
 
 class SPDYTool(Tool):
@@ -104,7 +108,7 @@ class SPDYHandler:
         return b''.join(chunks)
 
     def sendFrame(self, streamId: StreamId, data: bytes):
-        print("OutFrame:", data)
+        log.debug("OutFrame: %s", data)
         pck = struct.pack('!I', streamId) + b'\x00' + struct.pack(
             '!I', len(data))[1:] + data
         self.sock.sendall(pck)
@@ -116,7 +120,7 @@ class SPDYHandler:
         ptype, pflag = struct.unpack('!HB', header[2:5])
         plen = struct.unpack('!I', b'\x00' + header[5:8])[0]
         pdata = self.read(plen)
-        print("InFrame:", header)
+        log.debug("InFrame: %s", header)
         # print(header + pdata)
         return ptype, pflag, pdata
 
