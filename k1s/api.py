@@ -27,7 +27,11 @@ from k1s.spdy import SPDYTool, SPDYHandler
 
 log = logging.getLogger("K1S.api")
 cherrypy.tools.spdy = SPDYTool()
-Podman = ["sudo", "podman"]
+Podman = ["podman"]
+
+
+if os.getuid():
+    Podman.insert(0, "sudo")
 
 
 def pread(args: List[str]) -> str:
