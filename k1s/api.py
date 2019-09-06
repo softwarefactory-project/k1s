@@ -95,7 +95,10 @@ def exec_pod(
                         # This is the end
                         proc.stdin.close()
                     else:
-                        proc.stdin.write(data)
+                        try:
+                            proc.stdin.write(data)
+                        except BrokenPipeError:
+                            return -1
                         proc.stdin.flush()
                 else:
 
