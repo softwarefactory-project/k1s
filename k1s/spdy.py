@@ -85,7 +85,8 @@ FrameData = bytes
 FrameInfo = Tuple[FrameType, FrameFlag, FrameData]
 StreamId = int
 StreamName = str
-StreamInfo = Tuple[StreamId, StreamName]
+StreamPort = int
+StreamInfo = Tuple[StreamId, StreamName, StreamPort]
 
 
 class SPDYHandler:
@@ -134,23 +135,38 @@ class SPDYHandler:
         ptype, pflag, data = self.readControlFrame()
         if ptype != 1:
             raise RuntimeError("Not a stream packet")
+        streamPort = 0
+        streamName = b''
         # Parse SYN STREAM
         streamId, assocStreamId = struct.unpack('!II', data[:8])
         # print("streamId:", streamId, "assoc", assocStreamId)
         nvh = self.zs.decompress(data[10:]) + self.zs.flush(zlib.Z_SYNC_FLUSH)
 
         pair_num = struct.unpack('!I', nvh[:4])[0]
-        if pair_num != 1:
-            raise RuntimeError("Multiple value for stream")
+        if pair_num > 3:
+            raise RuntimeError("Too many values for stream name")
 
-        nam_len = struct.unpack('!I', nvh[4:8])[0]
-        name = nvh[8:8+nam_len]
-        if name != b"streamtype":
-            raise RuntimeError("Unknown stream value")
+        def read_pair(pair_data):
+            nam_len = struct.unpack('!I', pair_data[0:4])[0]
+            name = pair_data[4:4+nam_len]
+            if name not in (b"streamtype", b"port", b"requestid"):
+                raise RuntimeError("Unknown stream value")
 
-        val_len = struct.unpack('!I', nvh[8+nam_len:12+nam_len])[0]
-        val_name = nvh[12+nam_len:12+nam_len+val_len]
-        # print(pair_num, name, val_name)
+            val_len = struct.unpack('!I', pair_data[4+nam_len:4+nam_len+4])[0]
+            end_pos = 4+nam_len+4+val_len
+            val_name = pair_data[4+nam_len+4:end_pos]
+
+            return name, val_name, pair_data[end_pos:]
+
+        nvh = nvh[4:]
+        while pair_num > 0:
+            name, val_name, nvh = read_pair(nvh)
+            if name == b"streamtype":
+                streamName = val_name
+            elif name == b"port":
+                streamPort = int(val_name)
+            pair_num -= 1
+
         # Sending SYN_REPLY
         syn_data = data[:4] + data[10:]
         syn_reply = b'\x80\x03\x00\x02\x00' + struct.pack(
@@ -158,7 +174,9 @@ class SPDYHandler:
         # print("OutPacket:")
         # print(syn_reply)
         self.sock.sendall(syn_reply)
-        return val_name.decode('utf-8'), streamId
+        if not streamName:
+            raise RuntimeError("Didn't got a streamName")
+        return streamName.decode('utf-8'), streamId, streamPort
 
     def handle(self, args: Dict[str, str]):
         """Start thread from cherrypy controller"""

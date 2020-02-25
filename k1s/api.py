@@ -19,7 +19,7 @@ import os
 import select
 import subprocess
 import time
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import cherrypy
 
@@ -29,11 +29,13 @@ from k1s.spdy import SPDYTool, SPDYHandler
 log = logging.getLogger("K1S.api")
 cherrypy.tools.spdy = SPDYTool()
 Podman = ["podman"]
+NsEnter = ["nsenter"]
 TZFormat = "%Y-%m-%dT%H:%M:%S"
 
 
 if os.getuid():
     Podman.insert(0, "sudo")
+    NsEnter.insert(0, "sudo")
 
 
 def pread(args: List[str]) -> str:
@@ -49,6 +51,30 @@ def now() -> str:
 def delete_pod(name: str) -> None:
     log.info("Deleting %s")
     subprocess.Popen(Podman + ["kill", "k1s-" + name])
+
+
+def inspect_pod(name: str) -> Dict[str, Any]:
+    p = subprocess.Popen(
+        Podman + ["inspect", "k1s-" + name], stdout=subprocess.PIPE)
+    return json.loads(p.communicate()[0])[0]
+
+
+def netns_pod(name: str) -> str:
+    return inspect_pod(name)["NetworkSettings"]["SandboxKey"]
+
+
+def port_forward(name: str, port: int, spdy: SPDYHandler) -> int:
+    args = [
+        "--net=" + netns_pod(name),
+        "socat", "stdio", "tcp-connect:localhost:" + str(port)
+        ]
+    log.debug("Running %s", args)
+    proc = subprocess.Popen(
+        NsEnter + args,
+        bufsize=0, start_new_session=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE)
+    return process(proc, spdy, "data", "data")
 
 
 def exec_pod(
@@ -70,6 +96,12 @@ def exec_pod(
         bufsize=0, start_new_session=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if stdin else None)
+    return process(proc, spdy, "stdout", "stderr")
+
+
+def process(
+        proc: subprocess.Popen[bytes], spdy: SPDYHandler,
+        stdout: str, stderr: str) -> int:
     rc = -1
     try:
         for f in (proc.stdout, proc.stderr, spdy.sock):
@@ -104,9 +136,9 @@ def exec_pod(
 
                     idle_time = time.monotonic()
                     if reader == proc.stdout:
-                        output = "stdout"
+                        output = stdout
                     else:
-                        output = "stderr"
+                        output = stderr
                     data = reader.read()
                     if data:
                         process_active = True
@@ -158,6 +190,28 @@ def list_pods() -> List[Pod]:
     return pod_list
 
 
+class PortHandler(SPDYHandler):
+    def run(self) -> None:
+        inf = get_pod(self.args['pod'])
+        if not inf:
+            raise cherrypy.HTTPError(404, "Pod not found")
+        if inf["metadata"]["namespace"] != self.args['ns']:
+            raise RuntimeError("Invalid namespace %s" % self.args['ns'])
+        self.streams = {}  # type: Dict[str, int]
+        while len(self.streams) != 2:
+            name, streamId, port = self.readStreamPacket()
+            self.streams[name] = streamId
+            if name == "error":
+                # print("Purging data frame")
+                self.readDataFrame()
+                # print(data)
+        try:
+            port_forward(self.args['pod'], port, self)
+        except Exception:
+            log.exception("port_forward failed")
+        self.sock.close()
+
+
 class ExecHandler(SPDYHandler):
     def run(self) -> None:
         inf = get_pod(self.args['pod'])
@@ -171,7 +225,7 @@ class ExecHandler(SPDYHandler):
         # Process stream creation request first
         self.streams = {}  # type: Dict[str, int]
         while len(self.streams) != (4 if self.args.get('stdin') else 3):
-            name, streamId = self.readStreamPacket()
+            name, streamId, _ = self.readStreamPacket()
             self.streams[name] = streamId
         # print("Got all the streams!", self.streams)
 
@@ -198,6 +252,16 @@ class K1s:
     def check_token(self, headers: Dict[str, str]) -> None:
         if self.bearer and headers.get('Authorization', '') != self.bearer:
             raise cherrypy.HTTPError(401, 'Unauthorized')
+
+    @cherrypy.expose
+    @cherrypy.tools.spdy(handler_cls=PortHandler)
+    def port_forward(self, ns: str, name: str, *args, **kwargs) -> None:
+        self.check_token(cherrypy.request.headers)
+        kwargs['pod'] = name
+        kwargs['ns'] = ns
+        cherrypy.request.spdy_handler.handle(kwargs)
+        resp = cherrypy.response
+        resp.headers['X-Stream-Protocol-Version'] = "v4.channel.k8s.io"
 
     @cherrypy.expose
     @cherrypy.tools.spdy(handler_cls=ExecHandler)
@@ -275,6 +339,9 @@ def main(port=9023, blocking=True, token=None, tls=None):
         if os.path.exists(chain_path):
             cherrypy.server.ssl_certificate_chain = chain_path
 
+    route_map.connect('api', '/api/v1/namespaces/{ns}/pods/{name}/portforward',
+                      controller=api, action='port_forward',
+                      conditions=dict(method=["POST"]))
     route_map.connect('api', '/api/v1/namespaces/{ns}/pods/{name}/exec',
                       controller=api, action='exec_stream',
                       conditions=dict(method=["POST"]))
