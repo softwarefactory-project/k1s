@@ -96,11 +96,11 @@ def exec_pod(
         bufsize=0, start_new_session=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if stdin else None)
-    return process(proc, spdy, "stdout", "stderr")
+    return process(proc, spdy, "stdout", "stdout")
 
 
 def process(
-        proc: subprocess.Popen[bytes], spdy: SPDYHandler,
+        proc: subprocess.Popen, spdy: SPDYHandler,
         stdout: str, stderr: str) -> int:
     rc = -1
     try:
