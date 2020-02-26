@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import select
+import socket
 import subprocess
 import time
 from typing import Any, Dict, List, Optional, Union
@@ -199,7 +200,12 @@ class PortHandler(SPDYHandler):
             raise RuntimeError("Invalid namespace %s" % self.args['ns'])
         self.streams = {}  # type: Dict[str, int]
         while len(self.streams) != 2:
-            name, streamId, port = self.readStreamPacket()
+            try:
+                name, streamId, port = self.readStreamPacket()
+            except socket.timeout:
+                # kubectl client delays stream creation until the first
+                # connection.
+                continue
             self.streams[name] = streamId
             if name == "error":
                 # print("Purging data frame")
