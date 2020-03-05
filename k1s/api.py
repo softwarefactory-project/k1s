@@ -52,6 +52,10 @@ def now() -> str:
 def delete_pod(name: str) -> None:
     log.info("Deleting %s")
     subprocess.Popen(Podman + ["kill", "k1s-" + name])
+    try:
+        subprocess.Popen(Podman + ["rm", "-f", "k1s-" + name])
+    except Exception:
+        pass
 
 
 def inspect_pod(name: str) -> Dict[str, Any]:
@@ -187,7 +191,13 @@ def list_pods() -> List[Pod]:
             pread(list_args).split('\n'))):
         pod = get_pod(pod_name.lstrip("k1s-"))
         if pod:
-            pod_list.append(pod)
+            if pod.get('status', {}).get('phase', '').lower() == 'exited':
+                try:
+                    delete_pod(pod['metadata']['name'])
+                except Exception:
+                    log.exception("%s: couldn't delete exited pod", pod_name)
+            else:
+                pod_list.append(pod)
     return pod_list
 
 
