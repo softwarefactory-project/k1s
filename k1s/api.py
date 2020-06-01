@@ -109,6 +109,8 @@ def process(
         stdout: str, stderr: str) -> int:
     rc = -1
     try:
+        if proc.stdout is None or proc.stderr is None:
+            raise RuntimeError("Invalid proc")
         for f in (proc.stdout, proc.stderr, spdy.sock):
             # Make proc output non blocking
             fd = f.fileno()
@@ -126,11 +128,16 @@ def process(
                 break
             for reader in r:
                 if reader == spdy.sock:
+                    if proc.stdin is None:
+                        raise RuntimeError("Process does not have stdin")
                     # Assume streamId is always stdin
                     _, flag, data = spdy.readDataFrame()
                     if flag == 1:
                         # This is the end
                         proc.stdin.close()
+                        if stdout == "data":
+                            # Port forward process
+                            return 0
                     else:
                         try:
                             proc.stdin.write(data)
@@ -152,7 +159,14 @@ def process(
                 rc = proc.poll()
                 break
     finally:
-        proc.terminate()
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
     return rc
 
 
@@ -206,9 +220,24 @@ class PortHandler(SPDYHandler):
         inf = get_pod(self.args['pod'])
         if not inf:
             raise cherrypy.HTTPError(404, "Pod not found")
-        if inf["metadata"]["namespace"] != self.args['ns']:
-            raise RuntimeError("Invalid namespace %s" % self.args['ns'])
-        self.streams = {}  # type: Dict[str, int]
+
+        # TODO: add support for multiple namespaces
+        # in the meantime, disable that bogus check
+        # if inf["metadata"]["namespace"] != self.args['ns']:
+        #     raise RuntimeError("Invalid namespace %s" % self.args['ns'])
+
+        try:
+            while True:
+                self.streams = {}  # type: Dict[str, int]
+                log.debug("Handling a new connection!")
+                self.handle_connection()
+        except EOFError:
+            pass
+        except Exception:
+            log.exception("port_forward failed")
+        self.sock.close()
+
+    def handle_connection(self) -> None:
         while len(self.streams) != 2:
             try:
                 name, streamId, port = self.readStreamPacket()
@@ -218,14 +247,9 @@ class PortHandler(SPDYHandler):
                 continue
             self.streams[name] = streamId
             if name == "error":
-                # print("Purging data frame")
+                # Error stream creation is followed by an empty data frame
                 self.readDataFrame()
-                # print(data)
-        try:
-            port_forward(self.args['pod'], port, self)
-        except Exception:
-            log.exception("port_forward failed")
-        self.sock.close()
+        port_forward(self.args['pod'], port, self)
 
 
 class ExecHandler(SPDYHandler):

@@ -103,7 +103,7 @@ class SPDYHandler:
         while rcv < count:
             chunk = self.sock.recv(count - rcv)
             if not chunk:
-                raise RuntimeError("Socket connection closed")
+                raise EOFError("Socket connection closed")
             chunks.append(chunk)
             rcv += len(chunk)
         return b''.join(chunks)
