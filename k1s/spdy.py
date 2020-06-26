@@ -146,7 +146,8 @@ class SPDYHandler:
     def handleStreamPacket(self, frameInfo: FrameInfo) -> StreamInfo:
         ptype, pflag, data = frameInfo
         if ptype != 1:
-            raise RuntimeError("Not a stream packet")
+            # Assume a GOAWAY packet
+            raise EOFError
         streamPort = 0
         streamName = b''
         # Parse SYN STREAM
@@ -188,7 +189,7 @@ class SPDYHandler:
         self.sock.sendall(syn_reply)
         if not streamName:
             raise RuntimeError("Didn't got a streamName")
-        return streamName.decode('utf-8'), streamId, streamPort
+        return streamId, streamName.decode('utf-8'), streamPort
 
     def readAnyFrame(self) -> Tuple[bool, Union[FrameInfo, StreamInfo]]:
         header, frameInfo = self.readFrameRaw()

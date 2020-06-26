@@ -17,15 +17,15 @@ import json
 import logging
 import os
 import select
-import socket
 import subprocess
+import sys
 import time
 from typing import Any, Dict, List, Optional, Union
 
-import cherrypy
+import cherrypy  # type: ignore
 
-from k1s.schema import Pod, new_pod, PodAPI
-from k1s.spdy import SPDYTool, SPDYHandler
+from k1s.schema import Pod, new_pod, PodAPI  # type: ignore
+from k1s.spdy import SPDYTool, SPDYHandler  # type: ignore
 
 log = logging.getLogger("K1S.api")
 cherrypy.tools.spdy = SPDYTool()
@@ -61,14 +61,23 @@ def delete_pod(name: str) -> None:
 def inspect_pod(name: str) -> Dict[str, Any]:
     p = subprocess.Popen(
         Podman + ["inspect", "k1s-" + name], stdout=subprocess.PIPE)
-    return json.loads(p.communicate()[0])[0]
+    return json.loads(p.communicate()[0])[0]  # type: ignore
 
 
 def netns_pod(name: str) -> str:
-    return inspect_pod(name)["NetworkSettings"]["SandboxKey"]
+    return inspect_pod(name)["NetworkSettings"]["SandboxKey"]  # type: ignore
 
 
-def port_forward(name: str, port: int, spdy: SPDYHandler) -> int:
+# this doesn't work on some python because of: TypeError: 'type' object is not subscriptable
+# if sys.version_info[1] < 7:
+Proc = int
+# else:
+#    Proc = subprocess.Popen[Any]
+Stream = Optional[Proc]
+Streams = Dict[int, Stream]
+
+
+def create_stream(name: str, port: int) -> Proc:
     args = [
         "--net=" + netns_pod(name),
         "socat", "stdio", "tcp-connect:localhost:" + str(port)
@@ -79,7 +88,101 @@ def port_forward(name: str, port: int, spdy: SPDYHandler) -> int:
         bufsize=0, start_new_session=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE)
-    return process(proc, spdy, "data", "data")
+    list(map(unblock_file, (proc.stdout, proc.stderr)))
+    return proc
+
+
+def handle_port_forward_input(
+        name: str, spdy: SPDYHandler, streams: Streams) -> None:
+    isData, frame = spdy.readAnyFrame()
+    if isData:
+        streamId, flag, data = frame
+        if flag == 1:
+            log.debug("PF: got a fin data frame: %s", streamId)
+            try:
+                proc = streams.pop(streamId)
+                spdy.closeStream(streamId)
+                if proc:
+                    terminate(proc)
+            except KeyError:
+                log.warning(
+                    "PF: got a fin frame for an unknown stream %s", streamId)
+        else:
+            log.debug("PF: got a data frame for %s", streamId)
+            try:
+                proc = streams[streamId]
+                try:
+                    if proc and proc.stdin:
+                        proc.stdin.write(data)
+                    else:
+                        raise BrokenPipeError
+                except BrokenPipeError:
+                    log.warning("PF: Invalid stream %s", streamId)
+                    streams.pop(streamId)
+            except KeyError:
+                log.warning(
+                    "PF: got a data frame for an unknown stream %s", streamId)
+    else:
+        streamId, streamName, streamPort = frame
+        log.debug("PF: got a new stream %s named %s", streamId, streamName)
+        if streamName == "error":
+            streams[streamId] = None
+        elif streamName == "data":
+            streams[streamId] = create_stream(name, streamPort)
+        else:
+            log.warning("Unknown stream %s", streamName)
+
+
+def unblock_file(f: Any) -> None:
+    fd = f.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+
+def terminate(proc: Proc) -> None:
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def run_port_forwards(name: str, spdy: SPDYHandler) -> None:
+    streams: Dict[int, Stream] = dict()
+    unblock_file(spdy.sock)
+    try:
+        idle_time = time.monotonic()
+        while True:
+            readers = [spdy.sock]
+            for proc in streams.values():
+                if proc:
+                    readers.extend([proc.stdout, proc.stderr])
+            r, w, x = select.select(readers, [], [], 1)
+            if time.monotonic() - idle_time > 3600:
+                log.error("ERROR: process stalled")
+                break
+            for reader in r:
+                if reader == spdy.sock:
+                    handle_port_forward_input(name, spdy, streams)
+                else:
+                    data = reader.read()
+                    idle_time = time.monotonic()
+                    for streamId, proc in streams.items():
+                        if proc and reader in (proc.stdout, proc.stderr):
+                            if data:
+                                spdy.sendFrame(streamId, data)
+                            else:
+                                # Python is telling us that socat is dead
+                                spdy.closeStream(streamId)
+                                terminate(proc)
+                            break
+    finally:
+        for proc in streams.values():
+            if proc:
+                terminate(proc)
 
 
 def exec_pod(
@@ -101,22 +204,15 @@ def exec_pod(
         bufsize=0, start_new_session=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if stdin else None)
-    return process(proc, spdy, "stdout", "stdout")
+    return run_exec_stream(proc, spdy)
 
 
-def process(
-        proc: subprocess.Popen, spdy: SPDYHandler,
-        stdout: str, stderr: str) -> int:
+def run_exec_stream(proc: Proc, spdy: SPDYHandler) -> int:
     rc = -1
     try:
         if proc.stdout is None or proc.stderr is None:
             raise RuntimeError("Invalid proc")
-        for f in (proc.stdout, proc.stderr, spdy.sock):
-            # Make proc output non blocking
-            fd = f.fileno()
-            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
+        list(map(unblock_file, (proc.stdout, proc.stderr, spdy.sock)))
         idle_time = time.monotonic()
         while True:
             process_active = False
@@ -135,9 +231,6 @@ def process(
                     if flag == 1:
                         # This is the end
                         proc.stdin.close()
-                        if stdout == "data":
-                            # Port forward process
-                            return 0
                     else:
                         try:
                             proc.stdin.write(data)
@@ -147,16 +240,15 @@ def process(
                 else:
 
                     idle_time = time.monotonic()
-                    if reader == proc.stdout:
-                        output = stdout
-                    else:
-                        output = stderr
+                    output = "stdout" if reader == proc.stdout else "stderr"
                     data = reader.read()
                     if data:
                         process_active = True
                         spdy.sendFrame(spdy.streams[output], data)
             if not process_active and proc.poll() is not None:
-                rc = proc.poll()
+                rc_val = proc.poll()
+                if rc_val is not None:
+                    rc = rc_val
                 break
     finally:
         try:
@@ -227,29 +319,12 @@ class PortHandler(SPDYHandler):
         #     raise RuntimeError("Invalid namespace %s" % self.args['ns'])
 
         try:
-            while True:
-                self.streams = {}  # type: Dict[str, int]
-                log.debug("Handling a new connection!")
-                self.handle_connection()
+            run_port_forwards(self.args['pod'], self)
         except EOFError:
             pass
         except Exception:
             log.exception("port_forward failed")
         self.sock.close()
-
-    def handle_connection(self) -> None:
-        while len(self.streams) != 2:
-            try:
-                name, streamId, port = self.readStreamPacket()
-            except socket.timeout:
-                # kubectl client delays stream creation until the first
-                # connection.
-                continue
-            self.streams[name] = streamId
-            if name == "error":
-                # Error stream creation is followed by an empty data frame
-                self.readDataFrame()
-        port_forward(self.args['pod'], port, self)
 
 
 class ExecHandler(SPDYHandler):
@@ -265,7 +340,7 @@ class ExecHandler(SPDYHandler):
         # Process stream creation request first
         self.streams = {}  # type: Dict[str, int]
         while len(self.streams) != (4 if self.args.get('stdin') else 3):
-            name, streamId, _ = self.readStreamPacket()
+            streamId, name, _ = self.readStreamPacket()
             self.streams[name] = streamId
         # print("Got all the streams!", self.streams)
 
@@ -425,4 +500,4 @@ def run():
 
 
 if __name__ == '__main__':
-    main()
+    run()
