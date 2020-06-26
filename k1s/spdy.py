@@ -20,7 +20,7 @@ import logging
 import struct
 import threading
 import zlib
-from typing import Dict, Tuple
+from typing import Dict, Union, Tuple
 
 from cherrypy import Tool
 from cheroot.server import HTTPConnection, HTTPRequest, KnownLengthRFile
@@ -79,6 +79,7 @@ class SPDYTool(Tool):
             current = current.f_back
 
 
+FrameHeader = bytes
 FrameType = int
 FrameFlag = int
 FrameData = bytes
@@ -108,22 +109,30 @@ class SPDYHandler:
             rcv += len(chunk)
         return b''.join(chunks)
 
+    def closeStream(self, streamId: StreamId) -> None:
+        pck = struct.pack('!I', streamId) + b'\x01' + b'\x00\x00\x00'
+        log.debug("EndFrame: %s", streamId)
+        self.sock.sendall(pck)
+
     def sendFrame(self, streamId: StreamId, data: bytes):
         log.debug("OutFrame: %s", data)
         pck = struct.pack('!I', streamId) + b'\x00' + struct.pack(
             '!I', len(data))[1:] + data
         self.sock.sendall(pck)
 
-    def readFrame(self, version: bytes) -> FrameInfo:
+    def readFrameRaw(self) -> Tuple[FrameHeader, FrameInfo]:
         header = self.read(8)
-        if header[:2] != version:
-            raise RuntimeError("Invalid frame", header)
         ptype, pflag = struct.unpack('!HB', header[2:5])
         plen = struct.unpack('!I', b'\x00' + header[5:8])[0]
         pdata = self.read(plen)
-        log.debug("InFrame: %s", header)
-        # print(header + pdata)
-        return ptype, pflag, pdata
+        log.debug("InFrame: %s (%s)", header, pdata[:42])
+        return header, (ptype, pflag, pdata)
+
+    def readFrame(self, version: bytes) -> FrameInfo:
+        header, frameInfo = self.readFrameRaw()
+        if header[:2] != version:
+            raise RuntimeError("Invalid frame", header)
+        return frameInfo
 
     def readDataFrame(self) -> FrameInfo:
         return self.readFrame(b'\x00\x00')
@@ -132,7 +141,10 @@ class SPDYHandler:
         return self.readFrame(b'\x80\x03')
 
     def readStreamPacket(self) -> StreamInfo:
-        ptype, pflag, data = self.readControlFrame()
+        return self.handleStreamPacket(self.readControlFrame())
+
+    def handleStreamPacket(self, frameInfo: FrameInfo) -> StreamInfo:
+        ptype, pflag, data = frameInfo
         if ptype != 1:
             raise RuntimeError("Not a stream packet")
         streamPort = 0
@@ -177,6 +189,15 @@ class SPDYHandler:
         if not streamName:
             raise RuntimeError("Didn't got a streamName")
         return streamName.decode('utf-8'), streamId, streamPort
+
+    def readAnyFrame(self) -> Tuple[bool, Union[FrameInfo, StreamInfo]]:
+        header, frameInfo = self.readFrameRaw()
+        if header[:2] == b'\x00\x00':
+            return (True, frameInfo)
+        elif header[:2] == b'\x80\x03':
+            return (False, self.handleStreamPacket(frameInfo))
+        else:
+            raise RuntimeError("Invalid frame", header)
 
     def handle(self, args: Dict[str, str]):
         """Start thread from cherrypy controller"""
