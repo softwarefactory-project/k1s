@@ -150,6 +150,10 @@ def terminate(proc: Proc) -> None:
         pass
 
 
+def stalled(idle_time: float) -> bool:
+    return time.monotonic() - idle_time > 21600 # 6 hours
+
+
 def run_port_forwards(name: str, spdy: SPDYHandler) -> None:
     streams: Dict[int, Stream] = dict()
     unblock_file(spdy.sock)
@@ -161,7 +165,7 @@ def run_port_forwards(name: str, spdy: SPDYHandler) -> None:
                 if proc:
                     readers.extend([proc.stdout, proc.stderr])
             r, w, x = select.select(readers, [], [], 1)
-            if time.monotonic() - idle_time > 3600:
+            if stalled(idle_time):
                 log.error("ERROR: process stalled")
                 break
             for reader in r:
@@ -219,7 +223,7 @@ def run_exec_stream(proc: Proc, spdy: SPDYHandler) -> int:
             r, w, x = select.select(
                 [proc.stdout, proc.stderr, spdy.sock], [], [], 1)
             # print("Select yield", r)
-            if time.monotonic() - idle_time > 3600:
+            if stalled(idle_time):
                 log.error("ERROR: process stalled")
                 break
             for reader in r:
