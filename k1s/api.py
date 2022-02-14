@@ -34,7 +34,18 @@ NsEnter = ["nsenter"]
 TZFormat = "%Y-%m-%dT%H:%M:%S"
 
 
-if os.getuid():
+def has_rootless() -> bool:
+    try:
+        return open("/proc/sys/user/max_user_namespaces").read().strip() != "0"
+    except:
+        return False
+
+
+def is_user() -> bool:
+    return os.getuid() != 0
+
+
+if is_user() and not has_rootless():
     Podman.insert(0, "sudo")
     NsEnter.insert(0, "sudo")
 
