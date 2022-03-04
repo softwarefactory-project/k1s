@@ -45,8 +45,9 @@ def is_user() -> bool:
     return os.getuid() != 0
 
 
-if is_user() and not has_rootless():
-    Podman.insert(0, "sudo")
+if is_user():
+    if not has_rootless():
+        Podman.insert(0, "sudo")
     NsEnter.insert(0, "sudo")
 
 
@@ -76,7 +77,8 @@ def inspect_pod(name: str) -> Dict[str, Any]:
 
 
 def netns_pod(name: str) -> str:
-    return inspect_pod(name)["NetworkSettings"]["SandboxKey"]  # type: ignore
+    pid = inspect_pod(name)["State"]["Pid"]  # type: ignore
+    return ("/proc/%s/ns/net" % pid)
 
 
 # this doesn't work on some python because of: TypeError: 'type' object is not subscriptable
@@ -295,6 +297,8 @@ def get_pod(name: str) -> Optional[Pod]:
         return None
     if len(inf) > 1:
         raise RuntimeError("Multiple container with same name: %s!" % name)
+    if len(inf) == 0:
+        return None
     inf = inf[0]
     ns = inf["Config"]["Annotations"].get(
         "io.softwarefactory-project.k1s.Namespace", "default")
