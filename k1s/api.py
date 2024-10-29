@@ -34,6 +34,18 @@ NsEnter = ["nsenter"]
 TZFormat = "%Y-%m-%dT%H:%M:%S"
 
 
+def setup_logging(with_debug):
+    fmt = '%(name)s - %(levelname)-5.5s - %(message)s'
+    if with_debug:
+        logging.basicConfig(format=fmt, level=logging.DEBUG)
+    else:
+        ch = logging.StreamHandler()
+        formatter = logging.Formatter(fmt)
+        ch.setFormatter(formatter)
+        log.addHandler(ch)
+        log.setLevel(logging.INFO)
+
+
 def has_rootless() -> bool:
     try:
         return open("/proc/sys/user/max_user_namespaces").read().strip() != "0"
@@ -459,10 +471,7 @@ class K1s:
 
 
 def main(port=9023, blocking=True, token=None, tls=None):
-    if os.environ.get("K1S_DEBUG"):
-        logging.basicConfig(
-            format='%(levelname)-5.5s - %(message)s',
-            level=logging.DEBUG)
+    setup_logging(os.environ.get("K1S_DEBUG"))
     route_map = cherrypy.dispatch.RoutesDispatcher()
     api = K1s(token)
     if tls:
@@ -506,6 +515,7 @@ def main(port=9023, blocking=True, token=None, tls=None):
         gl_conf["environment"] = "production"
     cherrypy.config.update({"global": gl_conf})
     cherrypy.tree.mount(api, '/', config=conf)
+    log.info("Starting k1s API")
     cherrypy.engine.start()
     if blocking:
         cherrypy.engine.block()
