@@ -295,6 +295,7 @@ def create_pod(name: str, namespace: str, image: str) -> Pod:
     log.info("Creating pod %s with %s", name, image)
     create_args = [
         "run", "--rm", "--detach", "--name", "k1s-" + name,
+        "--oom-score-adj", "850", "--memory", "8g",
         image, "sleep", "Inf"]
     if subprocess.Popen(Podman + create_args).wait():
         log.warning("Couldn't create pod")
