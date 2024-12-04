@@ -97,6 +97,7 @@ class SPDYHandler:
         self.sock = sock
         self.addr = addr
         self.zs = zlib.decompressobj(zdict=SPDY_dictionary)
+        self.streams = {}
 
     def read(self, count: int) -> bytes:
         chunks = []

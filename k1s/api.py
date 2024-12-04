@@ -16,9 +16,9 @@ import fcntl
 import json
 import logging
 import os
+import sys
 import select
 import subprocess
-import sys
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -49,7 +49,7 @@ def setup_logging(with_debug):
 def has_rootless() -> bool:
     try:
         return open("/proc/sys/user/max_user_namespaces").read().strip() != "0"
-    except:
+    except Exception:
         return False
 
 
@@ -93,16 +93,17 @@ def netns_pod(name: str) -> str:
     return ("/proc/%s/ns/net" % pid)
 
 
-# this doesn't work on some python because of: TypeError: 'type' object is not subscriptable
-# if sys.version_info[1] < 7:
-Proc = int
-# else:
-#    Proc = subprocess.Popen[Any]
+# this doesn't work on some python because of:
+# TypeError: 'type' object is not subscriptable
+if sys.version_info[1] < 7:
+    Proc = int
+else:
+    Proc = subprocess.Popen[Any]
 Stream = Optional[Proc]
 Streams = Dict[int, Stream]
 
 
-def create_stream(name: str, port: int) -> Proc:
+def create_stream(name: str, port: Union[int, bytes]) -> Proc:
     args = [
         "--net=" + netns_pod(name),
         "socat", "stdio", "tcp-connect:localhost:" + str(port)
@@ -176,7 +177,7 @@ def terminate(proc: Proc) -> None:
 
 
 def stalled(idle_time: float) -> bool:
-    return time.monotonic() - idle_time > 21600 # 6 hours
+    return time.monotonic() - idle_time > 21600  # 6 hours
 
 
 def run_port_forwards(name: str, spdy: SPDYHandler) -> None:
@@ -377,8 +378,14 @@ class ExecHandler(SPDYHandler):
         # print("Got all the streams!", self.streams)
 
         try:
+            _stdin = self.args.get('stdin', False)
+            if _stdin in [0, "0", "false", False]:
+                _stdin = False
+            else:
+                _stdin = True
             rc = exec_pod(
-                self.args['pod'], self.args.get('stdin', False),
+                self.args['pod'],
+                _stdin,
                 self.args['command'], self)
         except Exception:
             log.exception("execution failed")

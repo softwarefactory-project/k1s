@@ -1,0 +1,29 @@
+- project:
+    check:
+      jobs:
+        - tox-py39:
+            voting: no
+            nodeset:
+              nodes:
+                - name: testrunner
+                  label: cloud-centos-9-stream
+        - tox-pep8:
+            voting: no
+            nodeset:
+              nodes:
+                - name: testrunner
+                  label: cloud-centos-9-stream
+    gate:
+      jobs:
+        - tox-py39:
+            voting: no
+            nodeset:
+              nodes:
+                - name: testrunner
+                  label: cloud-centos-9-stream
+        - tox-pep8:
+            voting: no
+            nodeset:
+              nodes:
+                - name: testrunner
+                  label: cloud-centos-9-stream
