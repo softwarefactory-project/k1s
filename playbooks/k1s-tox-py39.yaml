@@ -1,0 +1,20 @@
+- hosts: all
+  roles:
+    - ensure-podman
+  tasks:
+    - name: install tox
+      ansible.builtin.shell:
+        python -m pip install --upgrade tox
+      become: true
+
+    - name: Install kubectl
+      ansible.builtin.get_url:
+        url: https://dl.k8s.io/release/v1.27.2/bin/linux/amd64/kubectl
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+      become: true
+
+    - name: run tox
+      ansible.builtin.shell:
+        cmd: tox -e py39
+        chdir: ~/src/softwarefactory-project.io/software-factory/k1s/

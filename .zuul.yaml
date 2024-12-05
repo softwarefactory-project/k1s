@@ -1,29 +1,31 @@
+- job:
+    name: k1s-tox-py39
+    run: playbooks/k1s-tox-py39.yaml
+    nodeset:
+      nodes:
+        - name: testrunner
+          label: cloud-centos-9-stream
+
+
 - project:
     check:
       jobs:
-        - tox-py39:
-            voting: no
-            nodeset:
-              nodes:
-                - name: testrunner
-                  label: cloud-centos-9-stream
+        - k1s-tox-py39
         - tox-pep8:
-            voting: no
+            voting: yes
             nodeset:
               nodes:
                 - name: testrunner
                   label: cloud-centos-9-stream
     gate:
       jobs:
-        - tox-py39:
-            voting: no
-            nodeset:
-              nodes:
-                - name: testrunner
-                  label: cloud-centos-9-stream
+        - k1s-tox-py39
         - tox-pep8:
-            voting: no
+            voting: yes
             nodeset:
               nodes:
                 - name: testrunner
                   label: cloud-centos-9-stream
+    periodic:
+      jobs:
+        - k1s-tox-py39

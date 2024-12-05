@@ -25,12 +25,15 @@ import uuid
 import cherrypy
 # from kubernetes.config import config_exception as kce
 from kubernetes import client as k8s_client
-from openshift import config
+from kubernetes import config
 
 import k1s.api
 
 
-fedora = "registry.fedoraproject.org/fedora:30"
+# Pod settings
+
+POD = "quay.io/fedora/python-311:latest"
+PYTHONPATH = "/opt/app-root/bin/python"
 
 
 def find_free_port():
@@ -53,6 +56,21 @@ def generate_cert():
     return d
 
 
+# sudo shouldn't be required, keep this in case it is
+def sudo_if_needed(args):
+    if os.environ.get('K1S_TESTS_NEED_SUDO'):
+        return['sudo'] + args
+    return args
+
+
+def find_kubectl():
+    proc = subprocess.Popen(["which", "kubectl", ],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    stdout, stderr = proc.communicate()
+    return stdout.decode('utf-8').strip()
+
+
 class K1sTestCase(unittest.TestCase):
     def setUp(self):
         self.port = find_free_port()
@@ -67,11 +85,23 @@ class K1sTestCase(unittest.TestCase):
 
     def createPod(self):
         self.pod = "nodepool-%d" % self.port
-        self.proc = subprocess.Popen([
-            "sudo", "podman", "run", "-it", "--name", "k1s-" + self.pod,
-            "--rm", fedora, "sleep", "Inf"])
-        # Give pod a second to start...
-        time.sleep(1)
+        args = sudo_if_needed(
+            ["podman", "run", "-it", "--name", "k1s-" + self.pod,
+             "--rm", POD, "sleep", "Inf"])
+        self.proc = subprocess.Popen(args)
+
+        i = 1
+        isUp = False
+        # Give pod time to start...
+        while i < 256 and not isUp:
+            test, _ = subprocess.Popen(
+                sudo_if_needed(["podman", "ps"]),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            ).communicate()
+            isUp = ("k1s-" + self.pod) in test.decode('utf-8').strip()
+            time.sleep(i)
+            i = i * 2
 
     def writeKubeConfig(self, token):
         with open(self.kubeconfig, "w") as of:
@@ -102,7 +132,8 @@ users:
         shutil.rmtree(self.cert_dir)
         if self.proc:
             subprocess.Popen(
-                ["sudo", "podman", "kill", "k1s-" + self.pod]).wait()
+                sudo_if_needed(["podman", "kill", "k1s-" + self.pod])
+            ).wait()
 
     def test_python_client(self):
         conf = config.new_client_from_config(
@@ -123,7 +154,7 @@ users:
         pod_name = "created-%d" % self.port
         spec_body = {
             'name': pod_name,
-            'image': fedora,
+            'image': POD,
             'command': ["/bin/bash", "-c", "--"],
             'args': ["while true; do sleep 30; done;"],
             'workingDir': '/tmp',
@@ -151,13 +182,13 @@ users:
             "propagationPolicy": "Background"
         }
         client.delete_namespaced_pod(
-            pod_name, "default", delete_body)
+            pod_name, "default", body=delete_body)
 
         time.sleep(1)
         pods = client.list_namespaced_pod("default").items
         if any(filter(lambda x: x.metadata.name == pod_name, pods)):
             print(pods)
-            assert False, "pod still there..."
+            assert False, "pod %s still there..." % pod_name
 
     def test_bad_token(self):
         self.writeKubeConfig("bad-token")
@@ -173,7 +204,8 @@ users:
 
     def test_kubectl(self):
         self.createPod()
-        proc = subprocess.Popen(["kubectl", "exec", self.pod, "id"],
+        KUBECTL = find_kubectl()
+        proc = subprocess.Popen([KUBECTL, "exec", self.pod, "--", "id"],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 env=dict(KUBECONFIG=self.kubeconfig))
@@ -189,25 +221,26 @@ users:
             of.write("""
 - hosts: all
   tasks:
-    - command: echo success
-    - command: sleep 5
-    - command: echo success
+    - ansible.builtin.command: echo success
+    - ansible.builtin.command: sleep 5
+    - ansible.builtin.command: echo success
 """)
         self.createPod()
         with open(hosts, "w") as of:
             of.write("[all]\n%s ansible_connection=kubectl "
-                     "ansible_python_interpreter=/bin/python3\n" % self.pod)
+                     "ansible_python_interpreter=%s\n" % (self.pod, PYTHONPATH))
 
-        proc = subprocess.Popen(["ansible-playbook", "-i", hosts, playbook],
+        proc = subprocess.Popen(["ansible-playbook", "-vvvv", "-i", hosts, playbook],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 env=dict(KUBECONFIG=self.kubeconfig,
                                          PATH=os.environ["PATH"]))
-        stdout, _ = proc.communicate()
+        stdout, stderr = proc.communicate()
         os.unlink(playbook)
         os.unlink(hosts)
         assert b"failed=0" in stdout
         assert b"unreachable=0" in stdout
         assert b"changed=3" in stdout
         assert b"ok=4" in stdout
+        assert b"" == stderr
         assert 0 == proc.wait()

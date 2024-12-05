@@ -257,7 +257,11 @@ def run_exec_stream(proc: Proc, spdy: SPDYHandler) -> int:
                     if proc.stdin is None:
                         raise RuntimeError("Process does not have stdin")
                     # Assume streamId is always stdin
-                    _, flag, data = spdy.readDataFrame()
+                    try:
+                        frameInfo = spdy.readDataFrame()
+                    except RuntimeError as e:
+                        log.debug(e)
+                    _, flag, data = frameInfo
                     if flag == 1:
                         # This is the end
                         proc.stdin.close()
