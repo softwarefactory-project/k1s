@@ -14,7 +14,12 @@
         mode: '0755'
       become: true
 
-    - name: run tox
+    - name: run tox pep8
+      ansible.builtin.shell:
+        cmd: tox -e pep8
+        chdir: ~/src/softwarefactory-project.io/software-factory/k1s/
+
+    - name: run tox py39
       ansible.builtin.shell:
         cmd: tox -e py39
         chdir: ~/src/softwarefactory-project.io/software-factory/k1s/

@@ -1,31 +1,30 @@
 - job:
-    name: k1s-tox-py39
-    run: playbooks/k1s-tox-py39.yaml
+    name: k1s-tox
+    run: playbooks/k1s-tox.yaml
     nodeset:
       nodes:
         - name: testrunner
           label: cloud-centos-9-stream
 
+- job:
+    name: deploy-k1s-rhel
+    description: deploy k1s service the way we do in production
+    run: playbooks/start_production_server.yaml
+    nodeset:
+      nodes:
+        - name: k1s99
+          label: cloud-rhel-9-3
 
 - project:
     check:
       jobs:
-        - k1s-tox-py39
-        - tox-pep8:
-            voting: yes
-            nodeset:
-              nodes:
-                - name: testrunner
-                  label: cloud-centos-9-stream
+        - k1s-tox
+        - deploy-k1s-rhel
     gate:
       jobs:
-        - k1s-tox-py39
-        - tox-pep8:
-            voting: yes
-            nodeset:
-              nodes:
-                - name: testrunner
-                  label: cloud-centos-9-stream
+        - k1s-tox
+        - deploy-k1s-rhel
     periodic:
       jobs:
-        - k1s-tox-py39
+        - k1s-tox
+        - deploy-k1s-rhel

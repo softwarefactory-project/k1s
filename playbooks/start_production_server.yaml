@@ -1,0 +1,138 @@
+---
+- hosts: all
+  tasks:
+  - name: Install epel
+    become: true
+    block:
+      - name: Try install epel-release if available
+        ansible.builtin.package:
+          name: epel-release
+          state: present
+        ignore_errors: true
+
+      - name: Check if epel-release package is installed
+        ansible.builtin.command: rpm -q epel-release
+        ignore_errors: true
+        register: _epel_package
+
+      - name: Import a key from a epel repo
+        when: _epel_package.rc != 0
+        ansible.builtin.rpm_key:
+          state: present
+          key: "https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}"
+
+      - name: Install epel release
+        when: _epel_package.rc != 0
+        ansible.builtin.package:
+          name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-{{ ansible_distribution_major_version }}.noarch.rpm"
+          state: present
+
+  - name: Install requirements
+    ansible.builtin.package:
+      name:
+        - podman
+        - python3-cherrypy
+        - python3-routes
+        - git
+        - cronie
+        - openssl
+        - socat
+    become: true
+
+  - name: Install kubectl
+    ansible.builtin.get_url:
+      url: https://dl.k8s.io/release/v1.27.2/bin/linux/amd64/kubectl
+      dest: /usr/local/bin/kubectl
+      mode: '0755'
+    become: true
+
+  - name: Create configuration group
+    ansible.builtin.group:
+      name: k1s
+    become: true
+
+  - name: Ensure user is in the group
+    ansible.builtin.user:
+      name: "{{ ansible_user }}"
+      append: yes
+      groups:
+        - k1s
+    become: true
+
+  - name: Install k1s
+    ansible.builtin.shell:
+      cmd: python3 setup.py develop --prefix /usr/ || exit 1
+      chdir: "/home/{{ ansible_user }}/src/softwarefactory-project.io/software-factory/k1s/"
+    become: true
+
+  - name: Ensure mtu for default bridge
+    ansible.builtin.lineinfile:
+      path: /etc/cni/net.d/87-podman.conflist
+      regexp: '^\s*"mtu":.*'
+      insertafter: '^\s*"bridge":.*'
+      line: '        "mtu": 1450,'
+    become: true
+    # It seems like recent podman no longer use this bridge. Let's ignore the error for now, and let's remove that task later.
+    failed_when: false
+
+  - name: Create config directory
+    ansible.builtin.file:
+      path: /etc/k1s
+      mode: 0770
+      state: directory
+      group: k1s
+    become: true
+
+  - name: create cert key
+    ansible.builtin.shell:
+      openssl genrsa -out /etc/k1s/key.pem 2048
+    become: true
+
+  - name: create certificate
+    ansible.builtin.shell:
+      openssl req -new -x509 -days 365 -subj "/C=FR/O=K1S/CN=localhost" -key /etc/k1s/key.pem -out /etc/k1s/cert.pem
+    become: true
+
+  - name: set certs permissions
+    ansible.builtin.file:
+      path: "/etc/k1s/{{ item }}.pem"
+      state: file
+      mode: '0440'
+      group: k1s
+    loop:
+      - "key"
+      - "cert"
+    become: true
+
+  - name: Install the user service
+    become: yes
+    block:
+      - name: ensure XDG is persisted
+        ansible.builtin.command: "loginctl enable-linger {{ ansible_user }}"
+      - ansible.builtin.copy:
+          remote_src: true
+          content: |
+            [Unit]
+            Description=K1S {{ ansible_user }} service
+            After=network.target
+
+            [Service]
+            Type=simple
+            SyslogIdentifier=k1s
+            User={{ ansible_user }}
+            Environment="K1S_TOKEN=aaa"
+            Environment="K1S_PORT=9293"
+            Environment="K1S_TLS_PATH=/etc/k1s"
+            ExecStart=/usr/bin/k1s
+
+            [Install]
+            WantedBy=multi-user.target
+          dest: "/etc/systemd/system/k1s-{{ ansible_user }}.service"
+
+  - name: Start the user service
+    become: yes
+    ansible.builtin.service:
+      name: "k1s-{{ ansible_user }}"
+      state: started
+      enabled: yes
+      daemon-reload: true
