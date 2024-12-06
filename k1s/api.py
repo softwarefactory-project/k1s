@@ -74,17 +74,21 @@ def now() -> str:
 
 
 def delete_pod(name: str) -> None:
-    log.info("Deleting %s")
+    log.info("Killing pod %s", name)
     subprocess.Popen(Podman + ["kill", "k1s-" + name])
     try:
         subprocess.Popen(Podman + ["rm", "-f", "k1s-" + name])
-    except Exception:
-        pass
+        log.info("Pod %s removed", name)
+    except Exception as e:
+        log.error("Removal of pod %s failed", name)
+        log.exception(e)
 
 
 def inspect_pod(name: str) -> Dict[str, Any]:
+    log.debug("Inspecting pod %s", name)
     p = subprocess.Popen(
         Podman + ["inspect", "k1s-" + name], stdout=subprocess.PIPE)
+    # TODO can this fail?
     return json.loads(p.communicate()[0])[0]  # type: ignore
 
 
@@ -108,9 +112,10 @@ def create_stream(name: str, port: Union[int, bytes]) -> Proc:
         "--net=" + netns_pod(name),
         "socat", "stdio", "tcp-connect:localhost:" + str(port)
         ]
-    log.debug("Running %s", args)
+    cmd = NsEnter + args
+    log.debug("Create stream by running \"%s\"", " ".join(cmd))
     proc = subprocess.Popen(
-        NsEnter + args,
+        cmd,
         bufsize=0, start_new_session=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE)
@@ -127,6 +132,7 @@ def handle_port_forward_input(
             log.debug("PF: got a fin data frame: %s", streamId)
             try:
                 proc = streams.pop(streamId)
+                # TODO should that be in a `finally` block?
                 spdy.closeStream(streamId)
                 if proc:
                     terminate(proc)
@@ -156,7 +162,8 @@ def handle_port_forward_input(
         elif streamName == "data":
             streams[streamId] = create_stream(name, streamPort)
         else:
-            log.warning("Unknown stream %s", streamName)
+            log.warning("PF: unknown stream %s with name %s",
+                        streamId, streamName)
 
 
 def unblock_file(f: Any) -> None:
@@ -168,12 +175,14 @@ def unblock_file(f: Any) -> None:
 def terminate(proc: Proc) -> None:
     try:
         proc.terminate()
-    except Exception:
-        pass
+    except Exception as e:
+        log.error("Could not terminate proc %r", proc)
+        log.exception(e)
     try:
         proc.kill()
-    except Exception:
-        pass
+    except Exception as e:
+        log.error("Could not kill proc %r", proc)
+        log.exception(e)
 
 
 def stalled(idle_time: float) -> bool:
@@ -192,7 +201,8 @@ def run_port_forwards(name: str, spdy: SPDYHandler) -> None:
                     readers.extend([proc.stdout, proc.stderr])
             r, w, x = select.select(readers, [], [], 1)
             if stalled(idle_time):
-                log.error("ERROR: process stalled")
+                log.error(
+                    "ERROR: port forwarding for %s stalled", name)
                 break
             for reader in r:
                 if reader == spdy.sock:
@@ -228,20 +238,27 @@ def exec_pod(
     else:
         exec_command.append(args)
 
-    log.debug("Running %s", args)
+    cmd = Podman + exec_command
+    log.debug("Exec pod %s by running \"%s\"", name, cmd)
     proc = subprocess.Popen(
-        Podman + exec_command,
+        cmd,
         bufsize=0, start_new_session=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if stdin else None)
-    return run_exec_stream(proc, spdy)
+    log.debug("start exec process %r for pod %s", proc, name)
+    try:
+        return run_exec_stream(proc, spdy)
+    except RuntimeError as e:
+        log.error("stream exec error for proc %r, pod %s", proc, name)
+        log.exception(e)
+        return -1
 
 
 def run_exec_stream(proc: Proc, spdy: SPDYHandler) -> int:
     rc = -1
     try:
         if proc.stdout is None or proc.stderr is None:
-            raise RuntimeError("Invalid proc")
+            raise RuntimeError("Invalid proc %r", proc)
         list(map(unblock_file, (proc.stdout, proc.stderr, spdy.sock)))
         idle_time = time.monotonic()
         while True:
@@ -250,12 +267,13 @@ def run_exec_stream(proc: Proc, spdy: SPDYHandler) -> int:
                 [proc.stdout, proc.stderr, spdy.sock], [], [], 1)
             # print("Select yield", r)
             if stalled(idle_time):
-                log.error("ERROR: process stalled")
+                log.error("ERROR: process %r stalled", proc)
                 break
             for reader in r:
                 if reader == spdy.sock:
                     if proc.stdin is None:
-                        raise RuntimeError("Process does not have stdin")
+                        raise RuntimeError(
+                            "Process %r does not have stdin", proc)
                     # Assume streamId is always stdin
                     try:
                         frameInfo = spdy.readDataFrame()
@@ -287,34 +305,51 @@ def run_exec_stream(proc: Proc, spdy: SPDYHandler) -> int:
     finally:
         try:
             proc.terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            log.error("Could not terminate proc %r", proc)
+            log.exception(e)
         try:
             proc.kill()
-        except Exception:
-            pass
+        except Exception as e:
+            log.error("Could not kill proc %r", proc)
+            log.exception(e)
     return rc
 
 
 def create_pod(name: str, namespace: str, image: str) -> Pod:
-    log.info("Creating pod %s with %s", name, image)
+    log.info("Creating pod %s/%s based on image %s", namespace, name, image)
     create_args = [
         "run", "--rm", "--detach", "--name", "k1s-" + name,
         "--oom-score-adj", "850", "--memory", "8g",
         image, "sleep", "Inf"]
-    if subprocess.Popen(Podman + create_args).wait():
-        log.warning("Couldn't create pod")
+    cmd = Podman + create_args
+    log.debug("Running \"%s\"", " ".join(cmd))
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+    outs, errs = proc.communicate()
+    if errs:
+        log.error(
+            "Couldn't create pod %s/%s: \"%s\" failed with error: \"%s\"",
+            namespace,
+            name,
+            " ".join(Podman + ["run"]),
+            errs)
     return new_pod(name, namespace, image, now(), "Pending")
 
 
 def get_pod(name: str) -> Optional[Pod]:
+    cmd = Podman + ["container", "inspect", "k1s-" + name]
     try:
-        inf = json.loads(pread(
-            Podman + ["container", "inspect", "k1s-" + name]))
-    except json.decoder.JSONDecodeError:
+        log.debug("Running \"%s\"", " ".join(cmd))
+        inf = json.loads(pread(cmd))
+    except json.decoder.JSONDecodeError as e:
+        log.error("Could not inspect pod %s", name)
+        log.exception(e)
         return None
     if len(inf) > 1:
-        raise RuntimeError("Multiple container with same name: %s!" % name)
+        raise RuntimeError("Multiple containers with same name: %s" % name)
     if len(inf) == 0:
         return None
     inf = inf[0]
@@ -329,6 +364,7 @@ def get_pod(name: str) -> Optional[Pod]:
 def list_pods() -> List[Pod]:
     pod_list = []
     list_args = Podman + ["ps", "-a", "--format", "{{.Names}}"]
+    log.debug("Running \"%s\"", list_args)
     for pod_name in list(filter(
             lambda x: x.startswith("k1s-"),
             pread(list_args).split('\n'))):
@@ -337,8 +373,9 @@ def list_pods() -> List[Pod]:
             if pod.get('status', {}).get('phase', '').lower() == 'exited':
                 try:
                     delete_pod(pod['metadata']['name'])
-                except Exception:
-                    log.exception("%s: couldn't delete exited pod", pod_name)
+                except Exception as e:
+                    log.error("Couldn't delete exited pod %s", pod_name)
+                    log.exception(e)
             else:
                 pod_list.append(pod)
     return pod_list
@@ -359,8 +396,9 @@ class PortHandler(SPDYHandler):
             run_port_forwards(self.args['pod'], self)
         except EOFError:
             pass
-        except Exception:
-            log.exception("port_forward failed")
+        except Exception as e:
+            log.error("port_forward for pod %s failed", self.args['pod'])
+            log.exception(e)
         self.sock.close()
 
 
@@ -370,7 +408,9 @@ class ExecHandler(SPDYHandler):
         if not inf:
             raise cherrypy.HTTPError(404, "Pod not found")
         if inf["metadata"]["namespace"] != self.args['ns']:
-            raise RuntimeError("Invalid namespace %s" % self.args['ns'])
+            raise cherrypy.HTTPError(
+                400,
+                "Invalid namespace %s" % self.args['ns'])
         # print("Exec args are:", self.args)
         log.debug("%s: runnning %s %s",
                   self.addr, self.args['pod'], self.args['command'])
@@ -391,13 +431,14 @@ class ExecHandler(SPDYHandler):
                 self.args['pod'],
                 _stdin,
                 self.args['command'], self)
-        except Exception:
-            log.exception("execution failed")
+        except Exception as e:
+            log.error("Exception while executing pod %s", self.args['pod'])
+            log.exception(e)
             rc = 1
 
         self.sendFrame(self.streams['error'], json.dumps({
             'kind': 'Status',
-            'Status': 'Failure' if rc else 'Success',
+            'Status': 'Success' if rc == 0 else 'Failure',
             'code': rc}).encode('ascii'))
         self.sock.close()
         # print(self.addr, "over and out")

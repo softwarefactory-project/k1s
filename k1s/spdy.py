@@ -44,7 +44,7 @@ class SPDYTool(Tool):
         hooks.attach('on_end_request', self.start_handler, priority=70)
 
     def upgrade(self, handler_cls):
-        """Intercep the request and detach it from cherrypy"""
+        """Intercept the request and detach it from cherrypy"""
         request = cherrypy.serving.request
         request.process_request_body = False
         response = cherrypy.serving.response
@@ -91,7 +91,7 @@ StreamInfo = Tuple[StreamId, StreamName, StreamPort]
 
 
 class SPDYHandler:
-    """An handler to takes care of the client socket"""
+    """A handler to takes care of the client socket"""
     # https://www.chromium.org/spdy/spdy-protocol/spdy-protocol-draft3-1
     def __init__(self, sock, addr):
         self.sock = sock
