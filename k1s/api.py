@@ -22,6 +22,9 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional, Union
 
+import pkg_resources
+
+
 import cherrypy  # type: ignore
 
 from k1s.schema import Pod, new_pod, PodAPI  # type: ignore
@@ -576,6 +579,17 @@ def main(port=9023, blocking=True, token=None, tls=None):
 
 
 def run():
+    if len(sys.argv) > 1:
+        if 'version' in sys.argv:
+            version = str(pkg_resources.require("k1s")[0].version)
+            # packaging.version.Version strips the leading "v" from the version
+            if not version.startswith('v'):
+                version = 'v' + version
+            print(version)
+            sys.exit(0)
+        else:
+            print('Unsupported argument(s) %s' % str(sys.argv[1:]))
+            sys.exit(1)
     main(port=os.environ.get("K1S_PORT", 9023),
          token=os.environ.get("K1S_TOKEN"),
          tls=os.environ.get("K1S_TLS_PATH"))

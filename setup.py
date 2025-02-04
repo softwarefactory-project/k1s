@@ -16,7 +16,7 @@ import setuptools
 
 setuptools.setup(
     name="k1s",
-    version="0.1.0",
+    version="v1.0.0",
     author="Tristan de Cacqueray",
     author_email="tdecacqu@redhat.com",
     description="Minimal kubernetes service for nodepool",
