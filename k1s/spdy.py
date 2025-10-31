@@ -205,7 +205,7 @@ class SPDYHandler:
         """Start thread from cherrypy controller"""
         # TODO: implement a manager to garbage collect bad streams
         self.args = args
-        threading.Thread(target=self.run).start()
+        threading.Thread(target=self.run, daemon=False).start()
 
     def run(self):
         raise NotImplementedError("SPDYHandler needs to implement run")

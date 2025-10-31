@@ -1,1 +1,2 @@
 cherrypy==v18.10.0
+cheroot<v11.0.0

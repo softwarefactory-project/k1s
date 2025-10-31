@@ -13,7 +13,7 @@
     nodeset:
       nodes:
         - name: k1s99
-          label: cloud-rhel-9-3
+          label: cloud-rhel-9-4
 
 - project:
     check:

@@ -14,6 +14,7 @@
 
 from contextlib import closing
 import socket
+import sys
 import unittest
 import tempfile
 import os
@@ -45,13 +46,15 @@ def find_free_port():
 def generate_cert():
     d = str(tempfile.mkdtemp())
     if subprocess.Popen(
-            ["openssl", "genrsa", "-out", d + "/key.pem", "2048"]).wait():
+            ["openssl", "genrsa", "-out", d + "/key.pem", "2048"]).wait(
+                timeout=60
+            ):
         raise RuntimeError("Couldn't create privkey")
     if subprocess.Popen(
             ["openssl", "req", "-new", "-x509", "-days", "365",
              "-subj", "/C=FR/O=K1S/CN=localhost",
              "-key", d + "/key.pem",
-             "-out", d + "/cert.pem"]).wait():
+             "-out", d + "/cert.pem"]).wait(timeout=60):
         raise RuntimeError("Couldn't create cert")
     return d
 
@@ -83,8 +86,10 @@ class K1sTestCase(unittest.TestCase):
         self.writeKubeConfig(self.token)
         self.proc = None
 
-    def createPod(self):
-        self.pod = "nodepool-%d" % self.port
+    def createPod(self, podName=None):
+        if podName is None:
+            podName = "nodepool"
+        self.pod = "%s-%d" % (podName, self.port)
         args = sudo_if_needed(
             ["podman", "run", "-it", "--name", "k1s-" + self.pod,
              "--rm", POD, "sleep", "Inf"])
@@ -131,15 +136,20 @@ users:
         os.unlink(self.kubeconfig)
         shutil.rmtree(self.cert_dir)
         if self.proc:
-            subprocess.Popen(
-                sudo_if_needed(["podman", "kill", "k1s-" + self.pod])
-            ).wait()
+            try:
+                subprocess.Popen(
+                    sudo_if_needed(["podman", "kill", "k1s-" + self.pod])
+                ).wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise Warning(
+                    'Warning: pod "k1s-%s" could not be properly killed, '
+                    'some manual cleanup is required.' % self.pod)
 
     def test_python_client(self):
         conf = config.new_client_from_config(
             config_file=self.kubeconfig, context='/k1s/admin')
         client = k8s_client.CoreV1Api(conf)
-        self.createPod()
+        self.createPod("python_client")
 
         pods = client.list_namespaced_pod("nodepool").items
         assert len(pods) >= 1
@@ -203,7 +213,7 @@ users:
             pass
 
     def test_kubectl(self):
-        self.createPod()
+        self.createPod("kubectl")
         KUBECTL = find_kubectl()
         proc = subprocess.Popen([KUBECTL, "exec", self.pod, "--", "id"],
                                 stdout=subprocess.PIPE,
@@ -212,7 +222,7 @@ users:
         stdout, stderr = proc.communicate()
         assert b"" == stderr
         assert b"uid=" in stdout
-        assert 0 == proc.wait()
+        assert 0 == proc.wait(timeout=60)
 
     def test_ansible(self):
         playbook = tempfile.mkstemp()[1]
@@ -225,7 +235,7 @@ users:
     - ansible.builtin.command: sleep 5
     - ansible.builtin.command: echo success
 """)
-        self.createPod()
+        self.createPod("ansible")
         with open(hosts, "w") as of:
             of.write("[all]\n%s ansible_connection=kubectl "
                      "ansible_python_interpreter=%s\n" % (self.pod, PYTHONPATH))
@@ -243,4 +253,4 @@ users:
         assert b"changed=3" in stdout
         assert b"ok=4" in stdout
         assert b"" == stderr
-        assert 0 == proc.wait()
+        assert 0 == proc.wait(timeout=60)
