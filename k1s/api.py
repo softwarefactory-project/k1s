@@ -22,7 +22,7 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional, Union
 
-import pkg_resources
+from importlib.metadata import version
 
 
 import cherrypy  # type: ignore
@@ -581,11 +581,11 @@ def main(port=9023, blocking=True, token=None, tls=None):
 def run():
     if len(sys.argv) > 1:
         if 'version' in sys.argv:
-            version = str(pkg_resources.require("k1s")[0].version)
+            _version = version("k1s")
             # packaging.version.Version strips the leading "v" from the version
-            if not version.startswith('v'):
-                version = 'v' + version
-            print(version)
+            if not _version.startswith('v'):
+                _version = 'v' + _version
+            print(_version)
             sys.exit(0)
         else:
             print('Unsupported argument(s) %s' % str(sys.argv[1:]))
